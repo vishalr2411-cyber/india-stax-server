@@ -118,13 +118,28 @@ function applyInterest(room) {
 }
 
 function broadcastTick(room) {
-  io.to(room.code).emit('tick', {
+  const basePayload = {
     curY: room.curY,
     curM: room.curM,
     secInYear: room.secInYear,
     macro: macroFor(room),
     prices: priceSnapshot(room),
     teams: publicTeamsList(room)
+  };
+  // Host gets the base payload (no personal cash/holdings needed)
+  if (room.hostSocketId) {
+    io.to(room.hostSocketId).emit('tick', basePayload);
+  }
+  // Each team gets the base payload PLUS their own live cash/holdings/fds
+  Object.entries(room.teams).forEach(([name, team]) => {
+    if (!team.socketId) return;
+    io.to(team.socketId).emit('tick', {
+      ...basePayload,
+      myCash: team.cash,
+      myHoldings: team.holdings,
+      myFds: team.fds,
+      myNetWorth: netWorthFor(room, team)
+    });
   });
 }
 
@@ -245,7 +260,17 @@ io.on('connection', (socket) => {
       room.ASSETS.forEach(a => t.holdings[a.id] = 0);
     });
 
-    io.to(code).emit('gameStarted', publicGameState(room));
+    const baseState = publicGameState(room);
+    if (room.hostSocketId) io.to(room.hostSocketId).emit('gameStarted', baseState);
+    Object.entries(room.teams).forEach(([name, team]) => {
+      if (!team.socketId) return;
+      io.to(team.socketId).emit('gameStarted', {
+        ...baseState,
+        myCash: team.cash,
+        myHoldings: team.holdings,
+        myFds: team.fds
+      });
+    });
     addNews(room, 'Markets open. Stocks are blind — read prices and macro only.');
     startTicker(room);
   });
