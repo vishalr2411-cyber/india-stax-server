@@ -13,7 +13,7 @@
 html,body{height:100%;background:#030608}
 body{font-family:'Inter',sans-serif;overflow:hidden}
 .root{background:#0a0e1a;color:#e2e8f0;width:100vw;height:100vh;overflow:hidden;font-size:12px;display:flex;flex-direction:column}
-.screen{display:none;flex:1;flex-direction:column;overflow:hidden}
+.screen{display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0}
 .screen.active{display:flex}
 
 /* LOBBY */
@@ -254,7 +254,7 @@ body{font-family:'Inter',sans-serif;overflow:hidden}
       <div class="nw-val" id="pNW">₹20,000</div>
     </div>
   </div>
-  <div class="rgrid" id="rGrid"></div>
+  <div class="rgrid" id="rGrid" style="flex:1;min-height:0;overflow-y:auto"></div>
   <div class="mwrap" id="mWrap">
     <div class="modal">
       <div class="mttl" id="mTtl">—</div>
