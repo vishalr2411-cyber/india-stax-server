@@ -11,13 +11,6 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---- In-memory room store ----
-// rooms[code] = {
-//   hostSocketId, code,
-//   teams: { teamName: { socketId, cash, holdings, fds, costBasis, joinedAt } },
-//   status: 'lobby' | 'running' | 'ended',
-//   startYear, curY, curM, secInYear, pickedStocks, ASSETS, tickInterval, newsLog
-// }
 const rooms = {};
 
 function randCode() {
@@ -27,9 +20,18 @@ function randCode() {
   return c;
 }
 
-function fmt(n) {
-  n = Math.round(n);
-  return n;
+function fmt(n) { return Math.round(n); }
+
+// Base price at game start (for indexing to 100)
+function getBasePrice(id, startYear) {
+  const d = md.DB[id];
+  if (!d) return 1;
+  return d[startYear] || 1;
+}
+
+// Convert actual price to indexed value (base 100 at game start)
+function toIndex(price, basePrice) {
+  return Math.round((price / basePrice) * 100 * 100) / 100;
 }
 
 function netWorthFor(room, team) {
@@ -56,9 +58,7 @@ function publicGameState(room) {
     startYear: room.startYear,
     curY: room.curY,
     curM: room.curM,
-    secInYear: room.secInYear,
     ASSETS: room.ASSETS,
-    newsLog: room.newsLog,
     teams: publicTeamsList(room)
   };
 }
@@ -83,11 +83,16 @@ function priceSnapshot(room) {
     } else {
       const price = md.getPrice(a.id, room.startYear, room.curY, room.curM);
       const prevPrice = md.prevMoPrice(a.id, room.startYear, room.curY, room.curM);
+      const basePrice = getBasePrice(a.id, room.startYear);
+      const rawHist = room.curY >= a.ul ? md.buildHistToMonth(a.id, room.startYear, room.curY, room.curM) : [];
+      // Convert hist to index values
+      const indexHist = rawHist.map(p => Math.round((p / basePrice) * 100 * 100) / 100);
       snap[a.id] = {
-        price,
-        prevPrice,
+        price: toIndex(price, basePrice),
+        prevPrice: toIndex(prevPrice, basePrice),
+        rawPrice: price, // kept for cost-basis calc on server only
         unlocked: room.curY >= a.ul,
-        hist: room.curY >= a.ul ? md.buildHist(a.id, room.startYear, room.curY) : []
+        hist: indexHist
       };
     }
   });
@@ -126,11 +131,7 @@ function broadcastTick(room) {
     prices: priceSnapshot(room),
     teams: publicTeamsList(room)
   };
-  // Host gets the base payload (no personal cash/holdings needed)
-  if (room.hostSocketId) {
-    io.to(room.hostSocketId).emit('tick', basePayload);
-  }
-  // Each team gets the base payload PLUS their own live cash/holdings/fds
+  if (room.hostSocketId) io.to(room.hostSocketId).emit('tick', basePayload);
   Object.entries(room.teams).forEach(([name, team]) => {
     if (!team.socketId) return;
     io.to(team.socketId).emit('tick', {
@@ -168,18 +169,59 @@ function startTicker(room) {
         room.nextCash = 6;
         addNews(room, 'Biannual inflow — ₹20,000 credited to every team.');
       }
-      if (room.curY === 20 && room.curM > 12) {
-        endGame(room);
-        return;
-      }
-      if (room.curM > 12) {
-        room.curM = 1;
-        room.secInYear = 0;
-        advanceYear(room);
-      }
+      if (room.curY === 20 && room.curM > 12) { endGame(room); return; }
+      if (room.curM > 12) { room.curM = 1; room.secInYear = 0; advanceYear(room); }
     }
     broadcastTick(room);
   }, 1000);
+}
+
+function buildTeamSummary(room, team) {
+  const assets = room.ASSETS;
+  const summary = [];
+  let totalInvested = 0;
+
+  // Savings
+  const savBal = team.holdings.savings || 0;
+  if (savBal > 0) {
+    summary.push({ label: 'Savings Account', group: 'Fixed Income', invested: savBal, currentVal: savBal, pnl: 0 });
+    totalInvested += savBal;
+  }
+
+  // FDs
+  ['fd1','fd3','fd5'].forEach(fdId => {
+    const myFds = team.fds.filter(f => f.type === fdId);
+    const tot = myFds.reduce((s, f) => s + f.amt, 0);
+    const a = assets.find(x => x.id === fdId);
+    if (tot > 0 && a) {
+      summary.push({ label: a.nm, group: 'Fixed Income', invested: tot, currentVal: tot, pnl: 0 });
+      totalInvested += tot;
+    }
+  });
+
+  // Market assets
+  assets.filter(a => !a.safe).forEach(a => {
+    const units = team.holdings[a.id] || 0;
+    if (units <= 0) return;
+    const currentPrice = md.getPrice(a.id, room.startYear, room.curY, room.curM);
+    const currentVal = units * currentPrice;
+    const costBasis = team.costBasis[a.id] || currentPrice;
+    const invested = units * costBasis;
+    const pnl = currentVal - invested;
+    const group = a.grp === 'index' ? 'Index' : a.grp === 'stocks' ? 'Equities' : 'Alternatives';
+    summary.push({ label: a.nm, group, invested, currentVal, pnl, pnlPct: (pnl / invested) * 100 });
+    totalInvested += invested;
+  });
+
+  // Group allocation %
+  const groups = {};
+  summary.forEach(s => {
+    groups[s.group] = (groups[s.group] || 0) + s.currentVal;
+  });
+  const totalVal = netWorthFor(room, team);
+  Object.keys(groups).forEach(g => { groups[g] = Math.round((groups[g] / totalVal) * 100); });
+
+  return { items: summary, totalInvested, totalVal, allocation: groups };
 }
 
 function endGame(room) {
@@ -188,15 +230,42 @@ function endGame(room) {
   const startYr = md.YN[room.startYear];
   const endYr = md.YN[room.startYear + 19];
   const bench = 20000 * 40 * (md.DB.sensex[room.startYear + 19] / md.DB.sensex[room.startYear]);
+
   const finalTeams = publicTeamsList(room).map(t => ({
     ...t,
-    vsBenchmark: ((t.wealth - bench) / bench * 100)
+    vsBenchmark: ((t.wealth - bench) / bench * 100),
+    allocation: buildTeamSummary(room, room.teams[t.name]).allocation
   }));
-  io.to(room.code).emit('gameOver', {
-    periodLabel: startYr + ' – ' + endYr,
-    stocks: room.pickedStocks.map(s => ({ codename: s.codename, name: s.name, sector: s.sector })),
-    teams: finalTeams
+
+  // Send each team their own personal summary
+  Object.entries(room.teams).forEach(([name, team]) => {
+    if (!team.socketId) return;
+    const summary = buildTeamSummary(room, team);
+    const myRank = finalTeams.findIndex(t => t.name === name) + 1;
+    io.to(team.socketId).emit('gameOver', {
+      periodLabel: startYr + ' – ' + endYr,
+      stocks: room.pickedStocks.map(s => ({ codename: s.codename, name: s.name, sector: s.sector })),
+      teams: finalTeams,
+      isHost: false,
+      mySummary: summary,
+      myRank,
+      totalTeams: finalTeams.length
+    });
   });
+
+  // Send host the full cross-team breakdown
+  if (room.hostSocketId) {
+    io.to(room.hostSocketId).emit('gameOver', {
+      periodLabel: startYr + ' – ' + endYr,
+      stocks: room.pickedStocks.map(s => ({ codename: s.codename, name: s.name, sector: s.sector })),
+      teams: finalTeams,
+      isHost: true,
+      teamSummaries: Object.entries(room.teams).map(([name, team]) => ({
+        name,
+        ...buildTeamSummary(room, team)
+      }))
+    });
+  }
 }
 
 // ---- Socket handlers ----
@@ -207,8 +276,7 @@ io.on('connection', (socket) => {
     while (rooms[code]) code = randCode();
     rooms[code] = {
       code, hostSocketId: socket.id, hostName,
-      teams: {},
-      status: 'lobby',
+      teams: {}, status: 'lobby',
       startYear: 0, curY: 1, curM: 1, secInYear: 0, nextCash: 6,
       pickedStocks: [], ASSETS: [], newsLog: [], tickInterval: null
     };
@@ -223,11 +291,9 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room) return cb({ ok: false, error: 'Room not found' });
     if (room.status !== 'lobby') return cb({ ok: false, error: 'Game already started' });
-    if (Object.keys(room.teams).length >= 15 && !room.teams[teamName]) {
+    if (Object.keys(room.teams).length >= 15 && !room.teams[teamName])
       return cb({ ok: false, error: 'Room full (15 teams max)' });
-    }
     if (room.teams[teamName]) {
-      // Reconnect existing team
       room.teams[teamName].socketId = socket.id;
     } else {
       room.teams[teamName] = {
@@ -247,29 +313,20 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room || socket.id !== room.hostSocketId) return;
     if (!Object.keys(room.teams).length) return;
-
     room.startYear = md.pickStartYear();
     room.pickedStocks = md.pickStocks(room.startYear);
     room.ASSETS = md.buildAssetDefs(room.pickedStocks);
     room.curY = 1; room.curM = 1; room.nextCash = 6;
-    room.status = 'running';
-    room.newsLog = [];
-
+    room.status = 'running'; room.newsLog = [];
     Object.values(room.teams).forEach(t => {
       t.cash = 20000; t.holdings = {}; t.fds = []; t.costBasis = {};
       room.ASSETS.forEach(a => t.holdings[a.id] = 0);
     });
-
     const baseState = publicGameState(room);
     if (room.hostSocketId) io.to(room.hostSocketId).emit('gameStarted', baseState);
     Object.entries(room.teams).forEach(([name, team]) => {
       if (!team.socketId) return;
-      io.to(team.socketId).emit('gameStarted', {
-        ...baseState,
-        myCash: team.cash,
-        myHoldings: team.holdings,
-        myFds: team.fds
-      });
+      io.to(team.socketId).emit('gameStarted', { ...baseState, myCash: team.cash, myHoldings: team.holdings, myFds: team.fds });
     });
     addNews(room, 'Markets open. Stocks are blind — read prices and macro only.');
     startTicker(room);
@@ -283,10 +340,8 @@ io.on('connection', (socket) => {
     const team = room.teams[teamName];
     const a = room.ASSETS.find(x => x.id === assetId);
     if (!a || room.curY < a.ul) return cb && cb({ ok: false, error: 'Locked' });
-
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return cb && cb({ ok: false, error: 'Invalid amount' });
-
     if (mode === 'buy') {
       if (amt > team.cash + 0.01) return cb && cb({ ok: false, error: 'Not enough cash' });
       team.cash -= amt;
@@ -346,10 +401,10 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room) return;
     if (socket.data.isHost && room.hostSocketId === socket.id) {
-      // Host left — keep room alive for a grace period in case of refresh
+      // grace period
     } else if (socket.data.teamName && room.teams[socket.data.teamName]) {
       room.teams[socket.data.teamName].socketId = null;
-      io.to(room.hostSocketId).emit('teamsUpdate', publicTeamsList(room));
+      if (room.hostSocketId) io.to(room.hostSocketId).emit('teamsUpdate', publicTeamsList(room));
     }
   });
 });

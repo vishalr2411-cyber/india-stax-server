@@ -165,8 +165,29 @@ function buildHist(id, startYear, curY) {
   return res;
 }
 
+// Like buildHist, but includes full PAST years plus only the elapsed months
+// of the CURRENT year (up to curM), so the chart line visibly extends every
+// month/tick instead of jumping once per year.
+function buildHistToMonth(id, startYear, curY, curM) {
+  if (!DB[id]) return [];
+  const res = [];
+  const fullYears = Math.max(0, curY - 1); // years fully completed before this one
+  for (let y = 0; y < Math.min(fullYears, 20) && (startYear + y) < DB[id].length - 1; y++) {
+    const base = DB[id][startYear + y] || 0, next = DB[id][startYear + y + 1] || base;
+    for (let m = 0; m < 12; m++) res.push(Math.round(base + (next - base) * (m / 12)));
+  }
+  // Partial current year: only months elapsed so far (curM is 1-indexed)
+  const yIdx = startYear + fullYears;
+  if (yIdx < DB[id].length - 1 && fullYears < 20) {
+    const base = DB[id][yIdx] || 0, next = DB[id][Math.min(yIdx + 1, DB[id].length - 1)] || base;
+    const monthsElapsed = Math.max(1, Math.min(curM, 12));
+    for (let m = 0; m < monthsElapsed; m++) res.push(Math.round(base + (next - base) * (m / 12)));
+  }
+  return res;
+}
+
 module.exports = {
   DB, YN, SECTOR_SLOTS, CODENAMES, UNLOCK_YEARS, FIXED_ASSETS, NEWS_EVENTS,
   shuffle, pickStartYear, pickStocks, buildAssetDefs,
-  getPrice, prevMoPrice, getRate, buildHist
+  getPrice, prevMoPrice, getRate, buildHist, buildHistToMonth
 };
