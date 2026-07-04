@@ -333,6 +333,7 @@ let myRoomCode = '';
 let localCash = 20000, localHoldings = {}, localFds = [], ASSETS = [], charts = {};
 let mAsset = null, mMode = 'buy';
 let __costBasis = {};
+let localInvested = {}; // tracks ₹ amount invested per asset
 
 const ALLOC_COLORS = { 'Fixed Income':'#3b82f6','Index':'#06b6d4','Equities':'#f0b429','Alternatives':'#a855f7' };
 
@@ -370,6 +371,7 @@ socket.on('gameStarted',(state)=>{
     localCash=state.myCash!=null?state.myCash:20000;
     localHoldings=state.myHoldings||{};
     localFds=state.myFds||[];
+    localInvested={};
     ASSETS.forEach(a=>{if(localHoldings[a.id]==null)localHoldings[a.id]=0;});
     document.getElementById('pCash').textContent=fmt(localCash);
     document.getElementById('pNW').textContent=fmt(localCash);
@@ -605,7 +607,8 @@ function renderCard(a,priceData){
   const avgCost=__costBasis[a.id]||0,investedVal=avgCost*units,curVal=units*idxPrice,pnlVal=curVal-investedVal;
   const pnlStr=units>0&&investedVal>0?(pnlVal>=0?'▲ +':'▼ ')+(isIndexed?Math.abs(pnlVal).toFixed(1):fmt(Math.abs(pnlVal))):'';
   const priceDisplay=isIndexed?idxPrice.toFixed(1):'₹'+Math.round(idxPrice).toLocaleString('en-IN');
-  const holdDisplay=units>0?fmt(units*idxPrice)+' held':'No holdings';
+  const invested=localInvested[a.id]||0;
+  const holdDisplay=invested>0?fmt(invested)+' invested':'No holdings';
   const hist=priceData.hist||[];
   const isUp=hist.length>1&&hist[hist.length-1]>=hist[0];
   const cid='ch_'+a.id;
@@ -656,7 +659,7 @@ function openM(id,mode){
   let info='';
   if(id.startsWith('fd'))info='Breaking early incurs a 5% penalty on total amount.';
   else if(id==='savings')info='No lock-in. Rate tracks RBI repo rate live.';
-  else{const u=localHoldings[id]||0;if(u>0&&pd)info='You hold '+fmt(u*pd.price)+'';}
+  else{const inv=localInvested[id]||0;if(inv>0)info='You have '+fmt(inv)+' invested';}
   document.getElementById('mInfo').textContent=info||'Enter amount from your pocket cash.';
   document.getElementById('mInp').value='';
   document.getElementById('mConf').textContent=mode==='buy'?'Buy':'Sell';
@@ -666,11 +669,10 @@ function openM(id,mode){
 function closeModal(){document.getElementById('mWrap').classList.remove('open');mAsset=null;}
 function setMax(){
   const id=mAsset;let max=0;
-  const pd=window.__lastPrices?window.__lastPrices[id]:null;
   if(mMode==='buy')max=localCash;
   else if(id==='savings')max=localHoldings.savings||0;
   else if(id&&id.startsWith('fd'))max=localFds.filter(f=>f.type===id).reduce((s,f)=>s+f.amt,0);
-  else if(id&&pd)max=Math.floor((localHoldings[id]||0)*pd.price);
+  else if(id)max=localInvested[id]||0;
   document.getElementById('mInp').value=Math.floor(max);
 }
 function confirmTx(){
@@ -680,13 +682,22 @@ function confirmTx(){
   socket.emit('trade',{assetId:mAsset,mode:mMode,amount:amt},(res)=>{
     if(!res.ok){showNotif(res.error||'Trade failed','r');return;}
     localCash=res.cash;localHoldings=res.holdings;localFds=res.fds;
-    // Update local cost basis in index units for P&L display
+    if(modeC==='buy'&&!idC.startsWith('fd')&&idC!=='savings'){
+      localInvested[idC]=(localInvested[idC]||0)+amt;
+    } else if(modeC==='sell'&&!idC.startsWith('fd')&&idC!=='savings'){
+      // reduce proportionally
+      const prev=localInvested[idC]||0;
+      const units=localHoldings[idC]||0;
+      // if no units left, clear invested
+      if(units<=0.0001)localInvested[idC]=0;
+      else localInvested[idC]=Math.max(0,prev-amt);
+    }
     if(modeC==='buy'&&window.__lastPrices&&window.__lastPrices[idC]&&!idC.startsWith('fd')&&idC!=='savings'){
-      const idxP=window.__lastPrices[idC].price;
-      const units=amt/idxP;
+      const price=window.__lastPrices[idC].price;
+      const units=amt/price;
       const prevU=(localHoldings[idC]||0)-units;
-      const prevC=__costBasis[idC]||idxP;
-      __costBasis[idC]=prevU>0?(prevU*prevC+units*idxP)/(prevU+units):idxP;
+      const prevC=__costBasis[idC]||price;
+      __costBasis[idC]=prevU>0?(prevU*prevC+units*price)/(prevU+units):price;
     }
     document.getElementById('pCash').textContent=fmt(localCash);
     document.getElementById('pNW').textContent=fmt(res.netWorth);
