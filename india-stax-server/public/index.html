@@ -13,7 +13,7 @@
 html,body{height:100%;background:#030608}
 body{font-family:'Inter',sans-serif;overflow:hidden}
 .root{background:#0a0e1a;color:#e2e8f0;width:100vw;height:100vh;overflow:hidden;font-size:12px;display:flex;flex-direction:column}
-.screen{display:none;flex:1;flex-direction:column;overflow:hidden}
+.screen{display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0}
 .screen.active{display:flex}
 
 /* LOBBY */
@@ -62,7 +62,7 @@ body{font-family:'Inter',sans-serif;overflow:hidden}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
 /* ASSET GRID — full width, no sidebar */
-.rgrid{flex:1;overflow:hidden;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.rgrid{flex:1;overflow-y:auto;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
 .slbl{font-size:8px;color:#4a7aa0;letter-spacing:2px;text-transform:uppercase;padding:0 0 4px;border-bottom:1px solid #1a2d47;margin-bottom:5px}
 .arow{display:grid;gap:8px}
 .c2{grid-template-columns:repeat(2,1fr)}
@@ -106,8 +106,10 @@ body{font-family:'Inter',sans-serif;overflow:hidden}
 .mbtns{display:flex;gap:8px}
 
 /* NOTIF */
-.notif{position:fixed;top:24px;right:24px;background:#0d1628;border:1px solid #3b82f6;border-radius:8px;padding:9px 14px;font-size:11px;color:#3b82f6;max-width:220px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:999}
+.notif{position:fixed;top:24px;right:24px;background:#0d1628;border:2px solid #3b82f6;border-radius:10px;padding:14px 20px;font-size:15px;font-weight:700;color:#3b82f6;max-width:280px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:999;box-shadow:0 0 24px rgba(59,130,246,0.5);letter-spacing:0.3px}
 .notif.show{opacity:1}
+@keyframes notifPop{0%{transform:scale(0.92)}60%{transform:scale(1.04)}100%{transform:scale(1)}}
+.notif.show{animation:notifPop 0.25s ease}
 
 /* HOST DASHBOARD */
 .host-body{display:flex;flex:1;overflow:hidden}
@@ -252,7 +254,7 @@ body{font-family:'Inter',sans-serif;overflow:hidden}
       <div class="nw-val" id="pNW">₹20,000</div>
     </div>
   </div>
-  <div class="rgrid" id="rGrid"></div>
+  <div class="rgrid" id="rGrid" style="flex:1;min-height:0;overflow-y:auto"></div>
   <div class="mwrap" id="mWrap">
     <div class="modal">
       <div class="mttl" id="mTtl">—</div>
@@ -595,12 +597,15 @@ function renderCard(a,priceData){
   }
 
   if(!priceData)return;
+  const isIndexed=priceData.isIndexed;
   const idxPrice=priceData.price,prevIdx=priceData.prevPrice;
   const chg=prevIdx>0?((idxPrice-prevIdx)/prevIdx*100):0;
   const chgStr=(chg>=0?'+':'')+chg.toFixed(2)+'%';
   const units=localHoldings[a.id]||0;
-  const avgCostIdx=__costBasis[a.id]||0,investedIdx=avgCostIdx*units,curValIdx=units*idxPrice,pnlIdx=curValIdx-investedIdx;
-  const pnlStr=units>0&&investedIdx>0?(pnlIdx>=0?'▲ +':'▼ ')+Math.abs(pnlIdx).toFixed(1):'';
+  const avgCost=__costBasis[a.id]||0,investedVal=avgCost*units,curVal=units*idxPrice,pnlVal=curVal-investedVal;
+  const pnlStr=units>0&&investedVal>0?(pnlVal>=0?'▲ +':'▼ ')+(isIndexed?Math.abs(pnlVal).toFixed(1):fmt(Math.abs(pnlVal))):'';
+  const priceDisplay=isIndexed?idxPrice.toFixed(1):'₹'+Math.round(idxPrice).toLocaleString('en-IN');
+  const holdDisplay=units>0?(isIndexed?units.toFixed(2)+' u':fmt(units*idxPrice)+' held'):'No holdings';
   const hist=priceData.hist||[];
   const isUp=hist.length>1&&hist[hist.length-1]>=hist[0];
   const cid='ch_'+a.id;
@@ -610,19 +615,19 @@ function renderCard(a,priceData){
     el.innerHTML=`
       <div class="acnm">${a.nm}</div>
       <div class="acpr-row">
-        <div class="acpr" id="pr_${a.id}">${idxPrice.toFixed(1)}</div>
-        <div class="acidx">idx</div>
+        <div class="acpr" id="pr_${a.id}">${priceDisplay}</div>
+        ${isIndexed?'<div class="acidx">idx</div>':''}
         <div class="acchg ${chg>=0?'up':'dn'}" id="chg_${a.id}">${chgStr}</div>
       </div>
-      <div class="acpnl ${pnlIdx>=0?'up':'dn'}" id="pnl_${a.id}">${pnlStr}</div>
+      <div class="acpnl ${pnlVal>=0?'up':'dn'}" id="pnl_${a.id}">${pnlStr}</div>
       <div class="cw"><canvas id="${cid}"></canvas></div>
-      <div class="achold" id="hold_${a.id}">${units>0?units.toFixed(2)+' u':' No holdings'}</div>
+      <div class="achold" id="hold_${a.id}">${holdDisplay}</div>
       <div class="acacts"><button class="bsell" onclick="openM('${a.id}','sell')">Sell</button><button class="bbuy" onclick="openM('${a.id}','buy')">Buy</button></div>`;
   } else {
-    document.getElementById('pr_'+a.id).textContent=idxPrice.toFixed(1);
+    document.getElementById('pr_'+a.id).textContent=priceDisplay;
     const ce=document.getElementById('chg_'+a.id);ce.textContent=chgStr;ce.className='acchg '+(chg>=0?'up':'dn');
-    const pe=document.getElementById('pnl_'+a.id);pe.textContent=pnlStr;pe.className='acpnl '+(pnlIdx>=0?'up':'dn');
-    document.getElementById('hold_'+a.id).textContent=units>0?units.toFixed(2)+' u':'No holdings';
+    const pe=document.getElementById('pnl_'+a.id);pe.textContent=pnlStr;pe.className='acpnl '+(pnlVal>=0?'up':'dn');
+    document.getElementById('hold_'+a.id).textContent=holdDisplay;
   }
   if(a.ul===curY)el.classList.add('unlocking');
 
@@ -632,7 +637,7 @@ function renderCard(a,priceData){
       if(charts[a.id]){try{charts[a.id].destroy();}catch(e){}}
       charts[a.id]=new Chart(cv,{type:'line',
         data:{labels:hist.map((_,i)=>i),datasets:[{data:hist,borderColor:isUp?'#22c55e':'#ef4444',borderWidth:1.5,pointRadius:0,tension:0.4,fill:true,backgroundColor:isUp?'rgba(34,197,94,0.07)':'rgba(239,68,68,0.07)'}]},
-        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{enabled:false}},scales:{x:{display:false},y:{display:false}},animation:{duration:0}}
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{enabled:false}},scales:{x:{display:false},y:{display:false,min:Math.min(...hist)*0.95,max:Math.max(...hist)*1.05}},animation:{duration:0}}
       });
     });
   }
@@ -644,9 +649,10 @@ function openM(id,mode){
   mAsset=id;mMode=mode;
   const pd=window.__lastPrices?window.__lastPrices[id]:null;
   const rate=pd&&a.safe?pd.rate:null;
-  const idxPrice=pd&&!a.safe?pd.price:null;
+  const isIndexed=pd&&pd.isIndexed;
+  const displayPrice=pd&&!a.safe?(isIndexed?pd.price.toFixed(1)+' (index)':'₹'+Math.round(pd.price).toLocaleString('en-IN')):null;
   document.getElementById('mTtl').textContent=(mode==='buy'?'Invest in ':'Sell ')+a.nm;
-  document.getElementById('mSub').textContent=idxPrice!=null?'Index value: '+idxPrice.toFixed(1)+' (base 100 at game start)':'Rate: '+rate+'% p.a. (repo-linked)';
+  document.getElementById('mSub').textContent=displayPrice?'Current: '+displayPrice:'Rate: '+rate+'% p.a. (repo-linked)';
   let info='';
   if(id.startsWith('fd'))info='Breaking early incurs a 5% penalty on total amount.';
   else if(id==='savings')info='No lock-in. Rate tracks RBI repo rate live.';

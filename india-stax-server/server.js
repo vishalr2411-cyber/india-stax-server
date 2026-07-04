@@ -83,17 +83,28 @@ function priceSnapshot(room) {
     } else {
       const price = md.getPrice(a.id, room.startYear, room.curY, room.curM);
       const prevPrice = md.prevMoPrice(a.id, room.startYear, room.curY, room.curM);
-      const basePrice = getBasePrice(a.id, room.startYear);
       const rawHist = room.curY >= a.ul ? md.buildHistToMonth(a.id, room.startYear, room.curY, room.curM) : [];
-      // Convert hist to index values
-      const indexHist = rawHist.map(p => Math.round((p / basePrice) * 100 * 100) / 100);
-      snap[a.id] = {
-        price: toIndex(price, basePrice),
-        prevPrice: toIndex(prevPrice, basePrice),
-        rawPrice: price, // kept for cost-basis calc on server only
-        unlocked: room.curY >= a.ul,
-        hist: indexHist
-      };
+
+      if (a.id === 'sensex') {
+        // Only Sensex is indexed to 100
+        const basePrice = getBasePrice(a.id, room.startYear);
+        snap[a.id] = {
+          price: toIndex(price, basePrice),
+          prevPrice: toIndex(prevPrice, basePrice),
+          unlocked: room.curY >= a.ul,
+          hist: rawHist.map(p => Math.round((p / basePrice) * 100 * 100) / 100),
+          isIndexed: true
+        };
+      } else {
+        // All other assets show actual prices
+        snap[a.id] = {
+          price: Math.round(price),
+          prevPrice: Math.round(prevPrice),
+          unlocked: room.curY >= a.ul,
+          hist: rawHist,
+          isIndexed: false
+        };
+      }
     }
   });
   return snap;
