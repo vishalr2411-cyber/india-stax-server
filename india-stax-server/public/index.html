@@ -426,27 +426,42 @@ function joinRoom(){
   });
 }
 
-// Auto-rejoin on refresh if session exists
 function tryAutoRejoin(){
   const savedRole=localStorage.getItem('stax_role');
   const savedTeam=localStorage.getItem('stax_team');
   const savedCode=localStorage.getItem('stax_code');
   if(savedRole==='team'&&savedTeam&&savedCode){
     myRole='team';myTeamName=savedTeam;myRoomCode=savedCode;
-    socket.emit('teamJoin',{code:savedCode,teamName:savedTeam},(res)=>{
+    socket.emit('rejoinGame',{code:savedCode,teamName:savedTeam},(res)=>{
       if(!res.ok){
-        // game ended or room gone — clear and show lobby
         localStorage.removeItem('stax_team');
         localStorage.removeItem('stax_code');
         localStorage.removeItem('stax_role');
         return;
       }
-      document.getElementById('rcDisp').textContent=savedCode;
-      document.getElementById('waitTitle').textContent='Waiting for host to start...';
-      document.getElementById('wHint').textContent='Reconnected! Waiting for game to resume.';
-      document.getElementById('tList').innerHTML='';
-      document.getElementById('startBtn').style.display='none';
-      showScreen('sWait');
+      if(res.status==='lobby'){
+        document.getElementById('rcDisp').textContent=savedCode;
+        document.getElementById('waitTitle').textContent='Waiting for host to start...';
+        document.getElementById('wHint').textContent='Reconnected! Waiting for game to start.';
+        document.getElementById('tList').innerHTML='';
+        document.getElementById('startBtn').style.display='none';
+        showScreen('sWait');
+      } else if(res.status==='running'){
+        const state=res.state;
+        ASSETS=state.ASSETS;
+        window.__curY=state.curY||1;
+        window.__curM=state.curM||1;
+        localCash=state.myCash||20000;
+        localHoldings=state.myHoldings||{};
+        localFds=state.myFds||[];
+        localInvested=state.myInvested||{};
+        ASSETS.forEach(a=>{if(localHoldings[a.id]==null)localHoldings[a.id]=0;});
+        document.getElementById('pCash').textContent=fmt(localCash);
+        document.getElementById('pNW').textContent=fmt(localCash);
+        showScreen('sGame');
+        renderGrid();
+        showNotif('Reconnected!','g');
+      }
     });
   }
 }

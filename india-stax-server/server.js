@@ -298,6 +298,44 @@ io.on('connection', (socket) => {
     cb({ ok: true, code });
   });
 
+  socket.on('rejoinGame', ({ code, teamName }, cb) => {
+    code = (code || '').toUpperCase();
+    const room = rooms[code];
+    if (!room) return cb({ ok: false, error: 'Room not found' });
+    if (!room.teams[teamName]) return cb({ ok: false, error: 'Team not found' });
+    
+    // Update socket ID for reconnected player
+    room.teams[teamName].socketId = socket.id;
+    socket.join(code);
+    socket.data.roomCode = code;
+    socket.data.teamName = teamName;
+    socket.data.isHost = false;
+
+    const team = room.teams[teamName];
+    
+    if (room.status === 'lobby') {
+      return cb({ ok: true, status: 'lobby' });
+    }
+    
+    if (room.status === 'ended') {
+      return cb({ ok: false, error: 'Game already ended' });
+    }
+
+    // Game is running — send full current state
+    const baseState = publicGameState(room);
+    cb({
+      ok: true,
+      status: 'running',
+      state: {
+        ...baseState,
+        myCash: team.cash,
+        myHoldings: team.holdings,
+        myFds: team.fds,
+        myInvested: team.amountInvested || {}
+      }
+    });
+  });
+
   socket.on('teamJoin', ({ code, teamName }, cb) => {
     code = (code || '').toUpperCase();
     const room = rooms[code];
@@ -419,6 +457,29 @@ io.on('connection', (socket) => {
     team.fds = team.fds.filter(f => f !== fd);
     team.cash += pay;
     cb && cb({ ok: true, cash: team.cash, fds: team.fds });
+  });
+
+  socket.on('rejoinGame', ({ code, teamName }, cb) => {
+    code = (code || '').toUpperCase();
+    const room = rooms[code];
+    if (!room) return cb({ ok: false, error: 'Room not found' });
+    if (!room.teams[teamName]) return cb({ ok: false, error: 'Team not found' });
+    room.teams[teamName].socketId = socket.id;
+    socket.join(code);
+    socket.data.roomCode = code;
+    socket.data.teamName = teamName;
+    socket.data.isHost = false;
+    const team = room.teams[teamName];
+    if (room.status === 'lobby') return cb({ ok: true, status: 'lobby' });
+    if (room.status === 'ended') return cb({ ok: false, error: 'Game already ended' });
+    const baseState = publicGameState(room);
+    cb({ ok: true, status: 'running', state: {
+      ...baseState,
+      myCash: team.cash,
+      myHoldings: team.holdings,
+      myFds: team.fds,
+      myInvested: team.amountInvested || {}
+    }});
   });
 
   socket.on('disconnect', () => {
