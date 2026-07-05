@@ -371,7 +371,7 @@ socket.on('gameStarted',(state)=>{
     localCash=state.myCash!=null?state.myCash:20000;
     localHoldings=state.myHoldings||{};
     localFds=state.myFds||[];
-    localInvested={};
+    localInvested=state.myInvested||{};
     ASSETS.forEach(a=>{if(localHoldings[a.id]==null)localHoldings[a.id]=0;});
     document.getElementById('pCash').textContent=fmt(localCash);
     document.getElementById('pNW').textContent=fmt(localCash);
@@ -413,6 +413,9 @@ function joinRoom(){
   socket.emit('teamJoin',{code:c,teamName:n},(res)=>{
     if(!res.ok){document.getElementById('lobbyErr').textContent=res.error||'Could not join';return;}
     myRole='team';myTeamName=n;myRoomCode=c;
+    localStorage.setItem('stax_team',n);
+    localStorage.setItem('stax_code',c);
+    localStorage.setItem('stax_role','team');
     document.getElementById('lobbyErr').textContent='';
     document.getElementById('rcDisp').textContent=c;
     document.getElementById('waitTitle').textContent='Waiting for host to start...';
@@ -422,6 +425,32 @@ function joinRoom(){
     showScreen('sWait');
   });
 }
+
+// Auto-rejoin on refresh if session exists
+function tryAutoRejoin(){
+  const savedRole=localStorage.getItem('stax_role');
+  const savedTeam=localStorage.getItem('stax_team');
+  const savedCode=localStorage.getItem('stax_code');
+  if(savedRole==='team'&&savedTeam&&savedCode){
+    myRole='team';myTeamName=savedTeam;myRoomCode=savedCode;
+    socket.emit('teamJoin',{code:savedCode,teamName:savedTeam},(res)=>{
+      if(!res.ok){
+        // game ended or room gone — clear and show lobby
+        localStorage.removeItem('stax_team');
+        localStorage.removeItem('stax_code');
+        localStorage.removeItem('stax_role');
+        return;
+      }
+      document.getElementById('rcDisp').textContent=savedCode;
+      document.getElementById('waitTitle').textContent='Waiting for host to start...';
+      document.getElementById('wHint').textContent='Reconnected! Waiting for game to resume.';
+      document.getElementById('tList').innerHTML='';
+      document.getElementById('startBtn').style.display='none';
+      showScreen('sWait');
+    });
+  }
+}
+tryAutoRejoin();
 
 // ---- TICK ----
 socket.on('tick',(data)=>{
@@ -441,6 +470,7 @@ socket.on('tick',(data)=>{
       localCash=data.myCash;
       localHoldings=data.myHoldings||localHoldings;
       localFds=data.myFds||localFds;
+      if(data.myInvested)localInvested=data.myInvested;
       document.getElementById('pCash').textContent=fmt(localCash);
       document.getElementById('pNW').textContent=fmt(data.myNetWorth!=null?data.myNetWorth:localCash);
     }
@@ -475,6 +505,10 @@ socket.on('notif',({msg,type})=>showNotif(msg,type));
 
 // ---- GAME OVER ----
 socket.on('gameOver',(data)=>{
+  // clear saved session — game is done
+  localStorage.removeItem('stax_team');
+  localStorage.removeItem('stax_code');
+  localStorage.removeItem('stax_role');
   if(data.isHost){
     showHostEndScreen(data);
   } else {
@@ -669,10 +703,11 @@ function openM(id,mode){
 function closeModal(){document.getElementById('mWrap').classList.remove('open');mAsset=null;}
 function setMax(){
   const id=mAsset;let max=0;
+  const pd=window.__lastPrices?window.__lastPrices[id]:null;
   if(mMode==='buy')max=localCash;
   else if(id==='savings')max=localHoldings.savings||0;
   else if(id&&id.startsWith('fd'))max=localFds.filter(f=>f.type===id).reduce((s,f)=>s+f.amt,0);
-  else if(id)max=localInvested[id]||0;
+  else if(id&&pd)max=Math.floor((localHoldings[id]||0)*pd.price); // current market value
   document.getElementById('mInp').value=Math.floor(max);
 }
 function confirmTx(){
@@ -682,22 +717,28 @@ function confirmTx(){
   socket.emit('trade',{assetId:mAsset,mode:mMode,amount:amt},(res)=>{
     if(!res.ok){showNotif(res.error||'Trade failed','r');return;}
     localCash=res.cash;localHoldings=res.holdings;localFds=res.fds;
-    if(modeC==='buy'&&!idC.startsWith('fd')&&idC!=='savings'){
-      localInvested[idC]=(localInvested[idC]||0)+amt;
-    } else if(modeC==='sell'&&!idC.startsWith('fd')&&idC!=='savings'){
-      // reduce proportionally
-      const prev=localInvested[idC]||0;
-      const units=localHoldings[idC]||0;
-      // if no units left, clear invested
-      if(units<=0.0001)localInvested[idC]=0;
-      else localInvested[idC]=Math.max(0,prev-amt);
-    }
-    if(modeC==='buy'&&window.__lastPrices&&window.__lastPrices[idC]&&!idC.startsWith('fd')&&idC!=='savings'){
-      const price=window.__lastPrices[idC].price;
-      const units=amt/price;
-      const prevU=(localHoldings[idC]||0)-units;
-      const prevC=__costBasis[idC]||price;
-      __costBasis[idC]=prevU>0?(prevU*prevC+units*price)/(prevU+units):price;
+    if(!idC.startsWith('fd')&&idC!=='savings'){
+      if(modeC==='buy'){
+        localInvested[idC]=(localInvested[idC]||0)+amt;
+      } else {
+        // clear completely if fully sold, else reduce proportionally
+        if((res.holdings[idC]||0)<0.0001){
+          localInvested[idC]=0;
+        } else {
+          localInvested[idC]=Math.max(0,(localInvested[idC]||0)-amt);
+        }
+      }
+      // cost basis tracking for P&L
+      if(modeC==='buy'&&window.__lastPrices&&window.__lastPrices[idC]){
+        const price=window.__lastPrices[idC].price;
+        const units=amt/price;
+        const prevU=(res.holdings[idC]||0)-units;
+        const prevC=__costBasis[idC]||price;
+        __costBasis[idC]=prevU>0?(prevU*prevC+units*price)/(prevU+units):price;
+      }
+      if(modeC==='sell'&&(res.holdings[idC]||0)<0.0001){
+        __costBasis[idC]=0;
+      }
     }
     document.getElementById('pCash').textContent=fmt(localCash);
     document.getElementById('pNW').textContent=fmt(res.netWorth);

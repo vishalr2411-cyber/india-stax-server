@@ -150,7 +150,8 @@ function broadcastTick(room) {
       myCash: team.cash,
       myHoldings: team.holdings,
       myFds: team.fds,
-      myNetWorth: netWorthFor(room, team)
+      myNetWorth: netWorthFor(room, team),
+      myInvested: team.amountInvested
     });
   });
 }
@@ -330,14 +331,20 @@ io.on('connection', (socket) => {
     room.curY = 1; room.curM = 1; room.nextCash = 6;
     room.status = 'running'; room.newsLog = [];
     Object.values(room.teams).forEach(t => {
-      t.cash = 20000; t.holdings = {}; t.fds = []; t.costBasis = {};
+      t.cash = 20000; t.holdings = {}; t.fds = []; t.costBasis = {}; t.amountInvested = {};
       room.ASSETS.forEach(a => t.holdings[a.id] = 0);
     });
     const baseState = publicGameState(room);
     if (room.hostSocketId) io.to(room.hostSocketId).emit('gameStarted', baseState);
     Object.entries(room.teams).forEach(([name, team]) => {
       if (!team.socketId) return;
-      io.to(team.socketId).emit('gameStarted', { ...baseState, myCash: team.cash, myHoldings: team.holdings, myFds: team.fds });
+      io.to(team.socketId).emit('gameStarted', {
+        ...baseState,
+        myCash: team.cash,
+        myHoldings: team.holdings,
+        myFds: team.fds,
+        myInvested: team.amountInvested
+      });
     });
     addNews(room, 'Markets open. Stocks are blind — read prices and macro only.');
     startTicker(room);
@@ -367,6 +374,7 @@ io.on('connection', (socket) => {
         const prevCost = team.costBasis[assetId] || price;
         team.costBasis[assetId] = (prevUnits * prevCost + units * price) / (prevUnits + units);
         team.holdings[assetId] = prevUnits + units;
+        team.amountInvested[assetId] = (team.amountInvested[assetId] || 0) + amt;
       }
     } else {
       if (assetId === 'savings') {
@@ -387,6 +395,12 @@ io.on('connection', (socket) => {
         const sellU = Math.min(needU, maxU);
         team.holdings[assetId] -= sellU;
         team.cash += sellU * price;
+        if (team.holdings[assetId] < 0.0001) {
+          team.holdings[assetId] = 0;
+          team.amountInvested[assetId] = 0;
+        } else {
+          team.amountInvested[assetId] = Math.max(0, (team.amountInvested[assetId] || 0) - amt);
+        }
       }
     }
     cb && cb({ ok: true, cash: team.cash, holdings: team.holdings, fds: team.fds, netWorth: netWorthFor(room, team) });
