@@ -372,6 +372,7 @@ socket.on('gameStarted',(state)=>{
     localHoldings=state.myHoldings||{};
     localFds=state.myFds||[];
     localInvested=state.myInvested||{};
+    __gridReady=false;
     ASSETS.forEach(a=>{if(localHoldings[a.id]==null)localHoldings[a.id]=0;});
     document.getElementById('pCash').textContent=fmt(localCash);
     document.getElementById('pNW').textContent=fmt(localCash);
@@ -455,6 +456,7 @@ function tryAutoRejoin(){
         localHoldings=state.myHoldings||{};
         localFds=state.myFds||[];
         localInvested=state.myInvested||{};
+        __gridReady=false;
         ASSETS.forEach(a=>{if(localHoldings[a.id]==null)localHoldings[a.id]=0;});
         document.getElementById('pCash').textContent=fmt(localCash);
         document.getElementById('pNW').textContent=fmt(localCash);
@@ -468,6 +470,7 @@ function tryAutoRejoin(){
 tryAutoRejoin();
 
 // ---- TICK ----
+let __gridReady = false;
 socket.on('tick',(data)=>{
   window.__curY=data.curY;window.__curM=data.curM;
   if(myRole==='host'){
@@ -477,20 +480,30 @@ socket.on('tick',(data)=>{
     updMacro('h',data.macro);
     renderHostLB(data.teams,[]);
   } else {
-    document.getElementById('yN').textContent=data.curY;
-    document.getElementById('mN').textContent=data.curM;
-    document.getElementById('tFill').style.width=(data.secInYear/60*100)+'%';
+    const yEl=document.getElementById('yN');
+    const mEl=document.getElementById('mN');
+    const tEl=document.getElementById('tFill');
+    if(yEl)yEl.textContent=data.curY;
+    if(mEl)mEl.textContent=data.curM;
+    if(tEl)tEl.style.width=(data.secInYear/60*100)+'%';
     updMacro('m',data.macro);
     if(data.myCash!=null){
       localCash=data.myCash;
       localHoldings=data.myHoldings||localHoldings;
       localFds=data.myFds||localFds;
       if(data.myInvested)localInvested=data.myInvested;
-      document.getElementById('pCash').textContent=fmt(localCash);
-      document.getElementById('pNW').textContent=fmt(data.myNetWorth!=null?data.myNetWorth:localCash);
+      const pc=document.getElementById('pCash');
+      const pn=document.getElementById('pNW');
+      if(pc)pc.textContent=fmt(localCash);
+      if(pn)pn.textContent=fmt(data.myNetWorth!=null?data.myNetWorth:localCash);
     }
     window.__lastPrices=data.prices;
-    ASSETS.forEach(a=>renderCard(a,data.prices[a.id]));
+    // if grid not ready yet (e.g. right after rejoin), render it now
+    if(!__gridReady||!document.getElementById('row_fixed')){
+      renderGrid();
+      __gridReady=true;
+    }
+    if(ASSETS.length>0)ASSETS.forEach(a=>renderCard(a,data.prices[a.id]));
   }
 });
 
@@ -615,7 +628,7 @@ function renderCard(a,priceData){
   let el=document.getElementById('ac_'+a.id);
   if(!el){el=document.createElement('div');el.id='ac_'+a.id;row.appendChild(el);}
   const curY=window.__curY||1;
-  const unlocked=priceData?(a.safe?curY>=a.ul:priceData.unlocked):curY>=a.ul;
+  const unlocked=priceData?(a.isBond||a.safe?curY>=a.ul:priceData.unlocked):curY>=a.ul;
 
   if(!unlocked){
     if(el.dataset.mode!=='locked'){el.dataset.mode='locked';el.className='acard mystery';el.innerHTML=`<div class="mq">?</div><div class="mqlbl">Locked · Y${a.ul}</div>`;}
@@ -634,6 +647,50 @@ function renderCard(a,priceData){
     }
     return;
   }
+
+  // G-Sec bond card
+  if(a.id==='gsec'){
+    if(!priceData)return;
+    const yield_=priceData.yield||7;
+    const bondPrice=priceData.price||100;
+    const prev=priceData.prevPrice||100;
+    const chg=prev>0?((bondPrice-prev)/prev*100):0;
+    const chgStr=(chg>=0?'+':'')+chg.toFixed(2)+'%';
+    const invested=localInvested.gsec||0;
+    const units=localHoldings.gsec||0;
+    const currentVal=units*bondPrice;
+    const coupon=units*100*(yield_/100/12);
+    const hist=priceData.hist||[];
+    const isUp=hist.length>1&&hist[hist.length-1]>=hist[0];
+    const cid='ch_gsec';
+    if(el.dataset.mode!=='gsec'){
+      el.dataset.mode='gsec';el.className='acard';
+      el.innerHTML=`
+        <div class="acnm">G-Sec Bond (10Y)</div>
+        <div class="acpr-row"><div class="acpr" id="pr_gsec">${bondPrice.toFixed(1)}</div><div class="acchg ${chg>=0?'up':'dn'}" id="chg_gsec">${chgStr}</div></div>
+        <div style="font-size:9px;color:#f0b429;margin-bottom:2px" id="yield_gsec">Yield: ${yield_}% · +${fmt(coupon)}/mo</div>
+        <div class="cw"><canvas id="${cid}"></canvas></div>
+        <div class="achold" id="hold_gsec">${invested>0?fmt(invested)+' invested':'No holdings'}</div>
+        <div class="acacts"><button class="bsell" onclick="openM('gsec','sell')">Sell</button><button class="bbuy" onclick="openM('gsec','buy')">Buy</button></div>`;
+    } else {
+      document.getElementById('pr_gsec').textContent=bondPrice.toFixed(1);
+      const ce=document.getElementById('chg_gsec');ce.textContent=chgStr;ce.className='acchg '+(chg>=0?'up':'dn');
+      document.getElementById('yield_gsec').textContent='Yield: '+yield_+'% · +'+fmt(coupon)+'/mo';
+      document.getElementById('hold_gsec').textContent=invested>0?fmt(invested)+' invested':'No holdings';
+    }
+    if(hist.length>1){
+      requestAnimationFrame(()=>{
+        const cv=document.getElementById(cid);if(!cv)return;
+        if(charts.gsec){try{charts.gsec.destroy();}catch(e){}}
+        charts.gsec=new Chart(cv,{type:'line',
+          data:{labels:hist.map((_,i)=>i),datasets:[{data:hist,borderColor:isUp?'#22c55e':'#ef4444',borderWidth:1.5,pointRadius:0,tension:0.4,fill:true,backgroundColor:isUp?'rgba(34,197,94,0.07)':'rgba(239,68,68,0.07)'}]},
+          options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{enabled:false}},scales:{x:{display:false},y:{display:false,min:Math.min(...hist)*0.95,max:Math.max(...hist)*1.05}},animation:{duration:0}}
+        });
+      });
+    }
+    return;
+  }
+
   if(a.id.startsWith('fd')){
     const rate=priceData?priceData.rate:0,mf=localFds.filter(f=>f.type===a.id),tot=mf.reduce((s,f)=>s+f.amt,0),int=tot*(rate/100/12);
     if(el.dataset.mode!=='fd'){
@@ -655,7 +712,9 @@ function renderCard(a,priceData){
   const units=localHoldings[a.id]||0;
   const avgCost=__costBasis[a.id]||0,investedVal=avgCost*units,curVal=units*idxPrice,pnlVal=curVal-investedVal;
   const pnlStr=units>0&&investedVal>0?(pnlVal>=0?'▲ +':'▼ ')+(isIndexed?Math.abs(pnlVal).toFixed(1):fmt(Math.abs(pnlVal))):'';
-  const priceDisplay=isIndexed?idxPrice.toFixed(1):'₹'+Math.round(idxPrice).toLocaleString('en-IN');
+  // Sensex: hide actual price, show only % change
+  const showPrice=!isIndexed;
+  const priceDisplay=showPrice?'₹'+Math.round(idxPrice).toLocaleString('en-IN'):'';
   const invested=localInvested[a.id]||0;
   const holdDisplay=invested>0?fmt(invested)+' invested':'No holdings';
   const hist=priceData.hist||[];
@@ -664,19 +723,20 @@ function renderCard(a,priceData){
 
   if(el.dataset.mode!=='stock'){
     el.dataset.mode='stock';el.className='acard';
+    const sectorLabel=a.realSector?`<div style="font-size:8px;color:#4a7aa0;letter-spacing:0.5px;margin-bottom:3px;text-transform:uppercase">${a.realSector}</div>`:'';
     el.innerHTML=`
       <div class="acnm">${a.nm}</div>
+      ${sectorLabel}
       <div class="acpr-row">
-        <div class="acpr" id="pr_${a.id}">${priceDisplay}</div>
-        ${isIndexed?'<div class="acidx">idx</div>':''}
-        <div class="acchg ${chg>=0?'up':'dn'}" id="chg_${a.id}">${chgStr}</div>
+        ${showPrice?`<div class="acpr" id="pr_${a.id}">${priceDisplay}</div>`:''}
+        <div class="acchg ${chg>=0?'up':'dn'}" id="chg_${a.id}" style="font-size:${showPrice?'11':'15'}px">${chgStr}</div>
       </div>
       <div class="acpnl ${pnlVal>=0?'up':'dn'}" id="pnl_${a.id}">${pnlStr}</div>
       <div class="cw"><canvas id="${cid}"></canvas></div>
       <div class="achold" id="hold_${a.id}">${holdDisplay}</div>
       <div class="acacts"><button class="bsell" onclick="openM('${a.id}','sell')">Sell</button><button class="bbuy" onclick="openM('${a.id}','buy')">Buy</button></div>`;
   } else {
-    document.getElementById('pr_'+a.id).textContent=priceDisplay;
+    if(showPrice)document.getElementById('pr_'+a.id).textContent=priceDisplay;
     const ce=document.getElementById('chg_'+a.id);ce.textContent=chgStr;ce.className='acchg '+(chg>=0?'up':'dn');
     const pe=document.getElementById('pnl_'+a.id);pe.textContent=pnlStr;pe.className='acpnl '+(pnlVal>=0?'up':'dn');
     document.getElementById('hold_'+a.id).textContent=holdDisplay;
@@ -700,14 +760,19 @@ function openM(id,mode){
   const a=ASSETS.find(x=>x.id===id);if(!a)return;
   mAsset=id;mMode=mode;
   const pd=window.__lastPrices?window.__lastPrices[id]:null;
-  const rate=pd&&a.safe?pd.rate:null;
-  const isIndexed=pd&&pd.isIndexed;
-  const displayPrice=pd&&!a.safe?(isIndexed?pd.price.toFixed(1)+' (index)':'₹'+Math.round(pd.price).toLocaleString('en-IN')):null;
   document.getElementById('mTtl').textContent=(mode==='buy'?'Invest in ':'Sell ')+a.nm;
-  document.getElementById('mSub').textContent=displayPrice?'Current: '+displayPrice:'Rate: '+rate+'% p.a. (repo-linked)';
+  if(id==='gsec'&&pd){
+    document.getElementById('mSub').textContent='Bond price: '+pd.price.toFixed(1)+' · Yield: '+pd.yield+'% p.a.';
+  } else if(a.safe){
+    document.getElementById('mSub').textContent='Rate: '+(pd?pd.rate:0)+'% p.a. (repo-linked)';
+  } else {
+    const isIdx=pd&&pd.isIndexed;
+    document.getElementById('mSub').textContent=pd?(isIdx?'% change only — price hidden':'Current: ₹'+Math.round(pd.price).toLocaleString('en-IN')):'—';
+  }
   let info='';
   if(id.startsWith('fd'))info='Breaking early incurs a 5% penalty on total amount.';
   else if(id==='savings')info='No lock-in. Rate tracks RBI repo rate live.';
+  else if(id==='gsec')info='Bond price moves inversely with yield. Sell anytime at market price. Coupon paid monthly to cash.';
   else{const inv=localInvested[id]||0;if(inv>0)info='You have '+fmt(inv)+' invested';}
   document.getElementById('mInfo').textContent=info||'Enter amount from your pocket cash.';
   document.getElementById('mInp').value='';
@@ -722,7 +787,8 @@ function setMax(){
   if(mMode==='buy')max=localCash;
   else if(id==='savings')max=localHoldings.savings||0;
   else if(id&&id.startsWith('fd'))max=localFds.filter(f=>f.type===id).reduce((s,f)=>s+f.amt,0);
-  else if(id&&pd)max=Math.floor((localHoldings[id]||0)*pd.price); // current market value
+  else if(id==='gsec'&&pd)max=Math.floor((localHoldings.gsec||0)*pd.price);
+  else if(id&&pd)max=Math.floor((localHoldings[id]||0)*pd.price);
   document.getElementById('mInp').value=Math.floor(max);
 }
 function confirmTx(){
@@ -736,24 +802,18 @@ function confirmTx(){
       if(modeC==='buy'){
         localInvested[idC]=(localInvested[idC]||0)+amt;
       } else {
-        // clear completely if fully sold, else reduce proportionally
-        if((res.holdings[idC]||0)<0.0001){
-          localInvested[idC]=0;
-        } else {
-          localInvested[idC]=Math.max(0,(localInvested[idC]||0)-amt);
-        }
+        const holdAmt=idC==='gsec'?(localHoldings.gsec||0):(localHoldings[idC]||0);
+        if(holdAmt<0.0001){localInvested[idC]=0;}
+        else{localInvested[idC]=Math.max(0,(localInvested[idC]||0)-amt);}
       }
-      // cost basis tracking for P&L
       if(modeC==='buy'&&window.__lastPrices&&window.__lastPrices[idC]){
         const price=window.__lastPrices[idC].price;
         const units=amt/price;
-        const prevU=(res.holdings[idC]||0)-units;
+        const prevU=(localHoldings[idC]||0)-units;
         const prevC=__costBasis[idC]||price;
         __costBasis[idC]=prevU>0?(prevU*prevC+units*price)/(prevU+units):price;
       }
-      if(modeC==='sell'&&(res.holdings[idC]||0)<0.0001){
-        __costBasis[idC]=0;
-      }
+      if(modeC==='sell'&&(localHoldings[idC]||0)<0.0001)__costBasis[idC]=0;
     }
     document.getElementById('pCash').textContent=fmt(localCash);
     document.getElementById('pNW').textContent=fmt(res.netWorth);

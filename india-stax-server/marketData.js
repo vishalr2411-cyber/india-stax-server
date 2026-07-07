@@ -4,6 +4,7 @@ const DB = {
   repo:       [9.0,8.0,7.0,6.5,6.0,5.5,4.5,4.5,6.0,7.75,5.0,5.75,7.25,8.0,7.5,7.0,6.75,6.25,6.0,5.15,4.0,4.0,4.0,4.0,4.5,6.5,6.5,6.5,6.25,6.0],
   cpi:        [8.0,13.2,3.4,4.0,4.0,3.7,4.3,3.8,8.3,10.9,12.1,8.9,7.4,6.4,5.9,5.4,3.6,3.4,3.7,6.2,6.6,5.1,4.7,5.5,6.7,6.7,5.4,4.8,4.5,4.5],
   gdp:        [4.0,6.2,7.4,5.4,5.6,3.8,8.0,7.9,7.9,8.4,9.3,9.3,6.7,8.4,9.0,8.0,7.1,6.6,6.1,4.0,-5.8,9.1,7.2,8.4,8.2,7.2,6.8,6.5,6.5,6.5],
+  gsec: [12.0,11.5,11.0,10.5,9.5,7.5,5.5,6.2,7.1,7.9,7.8,7.3,7.6,8.0,8.5,8.2,8.8,7.9,7.7,6.5,7.2,7.8,6.5,6.0,6.2,7.4,7.2,7.0,6.8,6.7],
   sensex:     [3361,3360,5001,3972,3604,2800,3469,5591,9398,13786,14522,20289,9718,17465,20509,17704,19426,26999,27499,28869,41254,48782,59307,60840,72240,79468,62000,65000,70000,78000],
   itc:        [9,10,12,14,17,15,22,38,68,94,130,170,225,178,180,220,240,320,315,196,245,278,350,245,210,358,450,430,470,510],
   hul:        [90,95,105,115,125,110,130,155,185,220,270,240,270,285,310,410,520,650,870,1250,1950,1680,2140,2450,2200,2600,2400,2600,2800,3000],
@@ -54,9 +55,9 @@ const UNLOCK_YEARS = [4, 4, 6, 7];
 
 const FIXED_ASSETS = [
   { id: 'savings', nm: 'Savings Acct', grp: 'fixed', ul: 1, safe: true },
-  { id: 'fd1', nm: 'FD — 1 Yr', grp: 'fixed', ul: 2, safe: true, fdY: 1 },
-  { id: 'fd3', nm: 'FD — 3 Yr', grp: 'fixed', ul: 2, safe: true, fdY: 3 },
-  { id: 'fd5', nm: 'FD — 5 Yr', grp: 'fixed', ul: 2, safe: true, fdY: 5 },
+  { id: 'gsec',    nm: 'G-Sec Bond',   grp: 'fixed', ul: 2, isBond: true },
+  { id: 'fd3',     nm: 'FD — 3 Yr',   grp: 'fixed', ul: 2, safe: true, fdY: 3 },
+  { id: 'fd5',     nm: 'FD — 5 Yr',   grp: 'fixed', ul: 2, safe: true, fdY: 5 },
   { id: 'sensex', nm: 'Sensex', grp: 'index', ul: 3 },
   { id: 'realestate', nm: 'Real Estate', grp: 'alts', ul: 9 },
   { id: 'gold', nm: 'Gold /10g', grp: 'alts', ul: 10 },
@@ -149,10 +150,23 @@ function getRate(id, startYear, curY) {
   const i = startYear + curY - 1;
   const r = DB.repo[i] || 6;
   if (id === 'savings') return +(r - 2.5).toFixed(2);
-  if (id === 'fd1') return +(r - 1.5).toFixed(2);
+  if (id === 'gsec') return +(DB.gsec[i] || 7.0).toFixed(2);
   if (id === 'fd3') return +(r - 0.75).toFixed(2);
   if (id === 'fd5') return +(r + 0.25).toFixed(2);
   return r;
+}
+
+// G-Sec bond price: inverse of yield. Base price = 100, moves with yield changes.
+// Price = 100 * (baseYield / currentYield) — simplified bond pricing
+function getGSecPrice(startYear, curY) {
+  const baseYield = DB.gsec[startYear] || 7.0;
+  const curYield = DB.gsec[Math.min(startYear + curY - 1, DB.gsec.length - 1)] || 7.0;
+  return Math.round((baseYield / curYield) * 100 * 100) / 100;
+}
+function prevGSecPrice(startYear, curY) {
+  const baseYield = DB.gsec[startYear] || 7.0;
+  const prevYield = DB.gsec[Math.max(0, Math.min(startYear + curY - 2, DB.gsec.length - 1))] || 7.0;
+  return Math.round((baseYield / prevYield) * 100 * 100) / 100;
 }
 
 function buildHist(id, startYear, curY) {
@@ -189,5 +203,6 @@ function buildHistToMonth(id, startYear, curY, curM) {
 module.exports = {
   DB, YN, SECTOR_SLOTS, CODENAMES, UNLOCK_YEARS, FIXED_ASSETS, NEWS_EVENTS,
   shuffle, pickStartYear, pickStocks, buildAssetDefs,
-  getPrice, prevMoPrice, getRate, buildHist, buildHistToMonth
+  getPrice, prevMoPrice, getRate, buildHist, buildHistToMonth,
+  getGSecPrice, prevGSecPrice
 };

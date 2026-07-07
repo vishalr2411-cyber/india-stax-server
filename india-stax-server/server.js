@@ -78,33 +78,38 @@ function macroFor(room) {
 function priceSnapshot(room) {
   const snap = {};
   room.ASSETS.forEach(a => {
-    if (a.safe) {
+    if (a.id === 'savings') {
       snap[a.id] = { rate: md.getRate(a.id, room.startYear, room.curY) };
+    } else if (a.id.startsWith('fd')) {
+      snap[a.id] = { rate: md.getRate(a.id, room.startYear, room.curY) };
+    } else if (a.id === 'gsec') {
+      const price = md.getGSecPrice(room.startYear, room.curY);
+      const prevPrice = md.prevGSecPrice(room.startYear, room.curY);
+      const yield_ = md.getRate('gsec', room.startYear, room.curY);
+      // build gsec price history
+      const hist = [];
+      for (let y = 1; y <= Math.min(room.curY, 20); y++) {
+        hist.push(md.getGSecPrice(room.startYear, y));
+      }
+      snap[a.id] = { price, prevPrice, yield: yield_, unlocked: room.curY >= a.ul, hist, isBond: true };
+    } else if (a.id === 'sensex') {
+      const price = md.getPrice(a.id, room.startYear, room.curY, room.curM);
+      const prevPrice = md.prevMoPrice(a.id, room.startYear, room.curY, room.curM);
+      const rawHist = room.curY >= a.ul ? md.buildHistToMonth(a.id, room.startYear, room.curY, room.curM) : [];
+      const basePrice = md.DB[a.id][room.startYear] || 1;
+      snap[a.id] = {
+        price: Math.round((price / basePrice) * 100 * 100) / 100,
+        prevPrice: Math.round((prevPrice / basePrice) * 100 * 100) / 100,
+        unlocked: room.curY >= a.ul,
+        hist: rawHist.map(p => Math.round((p / basePrice) * 100 * 100) / 100),
+        isIndexed: true,
+        hidePrice: true
+      };
     } else {
       const price = md.getPrice(a.id, room.startYear, room.curY, room.curM);
       const prevPrice = md.prevMoPrice(a.id, room.startYear, room.curY, room.curM);
       const rawHist = room.curY >= a.ul ? md.buildHistToMonth(a.id, room.startYear, room.curY, room.curM) : [];
-
-      if (a.id === 'sensex') {
-        // Only Sensex is indexed to 100
-        const basePrice = getBasePrice(a.id, room.startYear);
-        snap[a.id] = {
-          price: toIndex(price, basePrice),
-          prevPrice: toIndex(prevPrice, basePrice),
-          unlocked: room.curY >= a.ul,
-          hist: rawHist.map(p => Math.round((p / basePrice) * 100 * 100) / 100),
-          isIndexed: true
-        };
-      } else {
-        // All other assets show actual prices
-        snap[a.id] = {
-          price: Math.round(price),
-          prevPrice: Math.round(prevPrice),
-          unlocked: room.curY >= a.ul,
-          hist: rawHist,
-          isIndexed: false
-        };
-      }
+      snap[a.id] = { price: Math.round(price), prevPrice: Math.round(prevPrice), unlocked: room.curY >= a.ul, hist: rawHist };
     }
   });
   return snap;
@@ -120,6 +125,14 @@ function applyInterest(room) {
   Object.values(room.teams).forEach(team => {
     const sr = md.getRate('savings', room.startYear, room.curY) / 100 / 12;
     team.holdings.savings = (team.holdings.savings || 0) * (1 + sr);
+
+    // G-Sec monthly coupon: yield × face value (units × base 100) / 12
+    if ((team.holdings.gsec || 0) > 0) {
+      const yield_ = md.getRate('gsec', room.startYear, room.curY) / 100 / 12;
+      const coupon = team.holdings.gsec * 100 * yield_; // face value = 100 per unit
+      team.cash += coupon;
+    }
+
     team.fds.forEach(f => {
       const r = md.getRate(f.type, room.startYear, room.curY) / 100 / 12;
       f.amt *= (1 + r);
@@ -405,6 +418,14 @@ io.on('connection', (socket) => {
         team.holdings.savings = (team.holdings.savings || 0) + amt;
       } else if (assetId.startsWith('fd')) {
         team.fds.push({ type: assetId, amt, left: a.fdY * 12 });
+      } else if (assetId === 'gsec') {
+        const price = md.getGSecPrice(room.startYear, room.curY);
+        const units = amt / price;
+        const prevUnits = team.holdings.gsec || 0;
+        const prevCost = team.costBasis.gsec || price;
+        team.costBasis.gsec = (prevUnits * prevCost + units * price) / (prevUnits + units);
+        team.holdings.gsec = prevUnits + units;
+        team.amountInvested.gsec = (team.amountInvested.gsec || 0) + amt;
       } else {
         const price = md.getPrice(assetId, room.startYear, room.curY, room.curM);
         const units = amt / price;
@@ -425,6 +446,20 @@ io.on('connection', (socket) => {
         const pay = fd.amt * 0.95;
         team.fds = team.fds.filter(f => f !== fd);
         team.cash += pay;
+      } else if (assetId === 'gsec') {
+        const price = md.getGSecPrice(room.startYear, room.curY);
+        const maxU = team.holdings.gsec || 0;
+        const needU = amt / price;
+        if (needU > maxU + 0.001) return cb && cb({ ok: false, error: 'Not enough bonds' });
+        const sellU = Math.min(needU, maxU);
+        team.holdings.gsec -= sellU;
+        team.cash += sellU * price;
+        if (team.holdings.gsec < 0.0001) {
+          team.holdings.gsec = 0;
+          team.amountInvested.gsec = 0;
+        } else {
+          team.amountInvested.gsec = Math.max(0, (team.amountInvested.gsec || 0) - amt);
+        }
       } else {
         const price = md.getPrice(assetId, room.startYear, room.curY, room.curM);
         const maxU = team.holdings[assetId] || 0;
