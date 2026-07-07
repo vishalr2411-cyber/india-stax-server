@@ -333,7 +333,8 @@ let myRoomCode = '';
 let localCash = 20000, localHoldings = {}, localFds = [], ASSETS = [], charts = {};
 let mAsset = null, mMode = 'buy';
 let __costBasis = {};
-let localInvested = {}; // tracks ₹ amount invested per asset
+let localInvested = {};
+let __gridReady = false;
 
 const ALLOC_COLORS = { 'Fixed Income':'#3b82f6','Index':'#06b6d4','Equities':'#f0b429','Alternatives':'#a855f7' };
 
@@ -470,7 +471,6 @@ function tryAutoRejoin(){
 tryAutoRejoin();
 
 // ---- TICK ----
-let __gridReady = false;
 socket.on('tick',(data)=>{
   window.__curY=data.curY;window.__curM=data.curM;
   if(myRole==='host'){
@@ -785,10 +785,10 @@ function setMax(){
   const id=mAsset;let max=0;
   const pd=window.__lastPrices?window.__lastPrices[id]:null;
   if(mMode==='buy')max=localCash;
-  else if(id==='savings')max=localHoldings.savings||0;
+  else if(id==='savings')max=Math.floor(localHoldings.savings||0);
   else if(id&&id.startsWith('fd'))max=localFds.filter(f=>f.type===id).reduce((s,f)=>s+f.amt,0);
   else if(id==='gsec'&&pd)max=Math.floor((localHoldings.gsec||0)*pd.price);
-  else if(id&&pd&&pd.isIndexed)max=localInvested[id]||0; // indexed: use invested amount
+  else if(id&&pd&&pd.isIndexed)max=Math.floor((localHoldings[id]||0)*pd.price);
   else if(id&&pd)max=Math.floor((localHoldings[id]||0)*pd.price);
   document.getElementById('mInp').value=Math.floor(max);
 }
@@ -798,24 +798,19 @@ function confirmTx(){
   const idC=mAsset,modeC=mMode;
   socket.emit('trade',{assetId:mAsset,mode:mMode,amount:amt},(res)=>{
     if(!res.ok){showNotif(res.error||'Trade failed','r');return;}
-    localCash=res.cash;localHoldings=res.holdings;localFds=res.fds;
-    if(!idC.startsWith('fd')&&idC!=='savings'){
-      if(modeC==='buy'){
-        localInvested[idC]=(localInvested[idC]||0)+amt;
-      } else {
-        const holdAmt=idC==='gsec'?(localHoldings.gsec||0):(localHoldings[idC]||0);
-        if(holdAmt<0.0001){localInvested[idC]=0;}
-        else{localInvested[idC]=Math.max(0,(localInvested[idC]||0)-amt);}
-      }
-      if(modeC==='buy'&&window.__lastPrices&&window.__lastPrices[idC]){
-        const price=window.__lastPrices[idC].price;
-        const units=amt/price;
-        const prevU=(localHoldings[idC]||0)-units;
-        const prevC=__costBasis[idC]||price;
-        __costBasis[idC]=prevU>0?(prevU*prevC+units*price)/(prevU+units):price;
-      }
-      if(modeC==='sell'&&(localHoldings[idC]||0)<0.0001)__costBasis[idC]=0;
+    localCash=res.cash;
+    localHoldings=res.holdings;
+    localFds=res.fds;
+    // cost basis tracking for P&L display only
+    if(modeC==='buy'&&window.__lastPrices&&window.__lastPrices[idC]&&!idC.startsWith('fd')&&idC!=='savings'){
+      const price=window.__lastPrices[idC].price;
+      const units=amt/price;
+      const prevU=(localHoldings[idC]||0)-units;
+      const prevC=__costBasis[idC]||price;
+      __costBasis[idC]=prevU>0?(prevU*prevC+units*price)/(prevU+units):price;
     }
+    if(modeC==='sell'&&(localHoldings[idC]||0)<0.0001)__costBasis[idC]=0;
+    // localInvested is now fully server-driven via tick — no client update needed
     document.getElementById('pCash').textContent=fmt(localCash);
     document.getElementById('pNW').textContent=fmt(res.netWorth);
     showNotif((mMode==='buy'?'Bought ':'Sold ')+fmt(amt),'g');

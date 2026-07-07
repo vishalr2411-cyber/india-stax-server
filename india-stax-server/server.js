@@ -426,7 +426,7 @@ io.on('connection', (socket) => {
         const price = md.getPrice(assetId, room.startYear, room.curY, room.curM);
         const maxU = team.holdings[assetId] || 0;
         const needU = amt / price;
-        if (needU > maxU + 0.001) return cb && cb({ ok: false, error: 'Not enough units' });
+        if (needU > maxU * 1.01 + 0.01) return cb && cb({ ok: false, error: 'Not enough units' });
         const sellU = Math.min(needU, maxU);
         team.holdings[assetId] -= sellU;
         team.cash += sellU * price;
