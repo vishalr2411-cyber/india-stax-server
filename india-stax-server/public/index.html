@@ -788,6 +788,7 @@ function setMax(){
   else if(id==='savings')max=localHoldings.savings||0;
   else if(id&&id.startsWith('fd'))max=localFds.filter(f=>f.type===id).reduce((s,f)=>s+f.amt,0);
   else if(id==='gsec'&&pd)max=Math.floor((localHoldings.gsec||0)*pd.price);
+  else if(id&&pd&&pd.isIndexed)max=localInvested[id]||0; // indexed: use invested amount
   else if(id&&pd)max=Math.floor((localHoldings[id]||0)*pd.price);
   document.getElementById('mInp').value=Math.floor(max);
 }
