@@ -432,10 +432,14 @@ function tryAutoRejoin(){
   const savedRole=localStorage.getItem('stax_role');
   const savedTeam=localStorage.getItem('stax_team');
   const savedCode=localStorage.getItem('stax_code');
+  console.log('tryAutoRejoin: role='+savedRole+' team='+savedTeam+' code='+savedCode);
   if(savedRole==='team'&&savedTeam&&savedCode){
     myRole='team';myTeamName=savedTeam;myRoomCode=savedCode;
+    console.log('Emitting rejoinGame...');
     socket.emit('rejoinGame',{code:savedCode,teamName:savedTeam},(res)=>{
+      console.log('rejoinGame response:', JSON.stringify(res));
       if(!res.ok){
+        console.log('Rejoin failed:', res.error);
         localStorage.removeItem('stax_team');
         localStorage.removeItem('stax_code');
         localStorage.removeItem('stax_role');
@@ -449,6 +453,7 @@ function tryAutoRejoin(){
         document.getElementById('startBtn').style.display='none';
         showScreen('sWait');
       } else if(res.status==='running'){
+        console.log('Rejoining running game, ASSETS length:', res.state?.ASSETS?.length);
         const state=res.state;
         ASSETS=state.ASSETS;
         window.__curY=state.curY||1;
@@ -468,7 +473,11 @@ function tryAutoRejoin(){
     });
   }
 }
-tryAutoRejoin();
+// Wait for socket to connect before attempting auto-rejoin
+socket.on('connect', () => {
+  console.log('Socket connected:', socket.id);
+  tryAutoRejoin();
+});
 
 // ---- TICK ----
 socket.on('tick',(data)=>{
